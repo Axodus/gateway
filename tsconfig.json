@@ -26,6 +26,7 @@
     "typeRoots": ["node_modules/@types", "src/@types"],
     "downlevelIteration": true,
     "skipLibCheck": true
+  
   },
   "exclude": ["node_modules"],
   "include": [

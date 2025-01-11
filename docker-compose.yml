@@ -1,0 +1,22 @@
+version: "3.3"
+services:
+  gateway:
+    container_name: gateway
+    build: .
+    restart: unless-stopped
+    ports:
+      - "15888:15888"
+      - "8080:8080"
+    volumes:
+      - "./conf:/home/gateway/conf"
+      - "./logs:/home/gateway/logs"
+      - "./db:/home/gateway/db"
+      - "./certs:/home/gateway/certs"
+    environment:
+      - GATEWAY_PASSPHRASE=a
+    networks:
+      - axodus-network
+
+networks:
+  axodus-network:
+    driver: bridge
