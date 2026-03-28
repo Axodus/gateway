@@ -1209,56 +1209,12 @@ export class Solana {
       return 0;
     }
 
-    // Base fee from meta (in lamports)
-    const baseFee = txData.meta.fee || 0;
+    // meta.fee is the TOTAL fee paid (already includes base fee + priority fee)
+    // Solana RPC returns the complete fee in this field
+    const totalFeeLamports = txData.meta.fee || 0;
+    const totalFee = totalFeeLamports * LAMPORT_TO_SOL;
 
-    // Extract priority fee from compute budget instructions
-    let priorityFee = 0;
-    try {
-      const computeBudgetProgramId = 'ComputeBudget111111111111111111111111111111';
-      const instructions = txData.transaction?.message?.instructions || [];
-      const accountKeys = txData.transaction?.message?.accountKeys || [];
-
-      // Find SetComputeUnitPrice instruction
-      for (const ix of instructions) {
-        const programId = accountKeys[ix.programIdIndex]?.toString() || accountKeys[ix.programIdIndex];
-
-        if (programId === computeBudgetProgramId && ix.data) {
-          // Decode base58 instruction data
-          const data = typeof ix.data === 'string' ? bs58.decode(ix.data) : ix.data;
-
-          // SetComputeUnitPrice instruction has discriminator [3] and u64 microLamports
-          if (data.length >= 9 && data[0] === 3) {
-            // Read u64 little-endian (microlamports per CU)
-            const microLamportsPerCU =
-              data[1] |
-              (data[2] << 8) |
-              (data[3] << 16) |
-              (data[4] << 24) |
-              (data[5] << 32) |
-              (data[6] << 40) |
-              (data[7] << 48) |
-              (data[8] << 56);
-
-            // Priority fee = (microlamports per CU) * (CUs consumed) / 1,000,000
-            const computeUnitsConsumed = txData.meta.computeUnitsConsumed || 0;
-            priorityFee = Math.floor((microLamportsPerCU * computeUnitsConsumed) / 1_000_000);
-            break;
-          }
-        }
-      }
-    } catch (error) {
-      logger.warn(`Failed to extract priority fee: ${error.message}`);
-    }
-
-    // Total fee = base fee + priority fee (convert to SOL)
-    const totalFee = (baseFee + priorityFee) * LAMPORT_TO_SOL;
-
-    if (priorityFee > 0) {
-      logger.info(
-        `Transaction fees: base=${baseFee} lamports, priority=${priorityFee} lamports, total=${baseFee + priorityFee} lamports (${totalFee.toFixed(9)} SOL)`,
-      );
-    }
+    logger.info(`Transaction fee: ${totalFeeLamports} lamports (${totalFee.toFixed(9)} SOL)`);
 
     return totalFee;
   }
