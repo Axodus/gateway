@@ -130,9 +130,14 @@ export class Jupiter {
       throw new Error(`Token not found: ${!inputToken ? inputTokenIdentifier : outputTokenIdentifier}`);
     }
 
-    const slippageBps = Math.round((slippagePct ?? this.config.slippagePct) * 100);
+    const effectiveSlippagePct = slippagePct ?? this.config.slippagePct;
+    const slippageBps = Math.round(effectiveSlippagePct * 100);
     const tokenDecimals = swapMode === 'ExactOut' ? outputToken.decimals : inputToken.decimals;
     const quoteAmount = Math.floor(amount * 10 ** tokenDecimals);
+
+    logger.info(
+      `Jupiter quote: ${inputToken.symbol}->${outputToken.symbol}, amount=${amount}, slippagePct=${effectiveSlippagePct}% (${slippageBps} bps), swapMode=${swapMode}, onlyDirectRoutes=${onlyDirectRoutes}, restrictIntermediateTokens=${restrictIntermediateTokens}`,
+    );
 
     // Build query parameters for the REST API
     const params = new URLSearchParams({

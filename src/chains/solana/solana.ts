@@ -1178,7 +1178,12 @@ export class Solana {
 
         // Check if transaction is already confirmed but had an error
         if (txData.meta?.err) {
-          throw new Error(`Transaction failed with error: ${JSON.stringify(txData.meta.err)}`);
+          const { parseSolanaError, getUserFriendlyErrorMessage } = await import('./solana-error-parser');
+          const errorStr = JSON.stringify(txData.meta.err);
+          const parsed = parseSolanaError(errorStr);
+          const friendlyMsg = getUserFriendlyErrorMessage(errorStr);
+          logger.error(`Transaction ${signature} failed: ${parsed.type} (code: ${parsed.errorCodeHex || 'unknown'})`);
+          throw new Error(friendlyMsg);
         }
 
         // More definitive check using slot confirmation
@@ -1518,6 +1523,25 @@ export class Solana {
         return { confirmed: true, txData };
       } else {
         logger.warn(`❌ Transaction ${signature} not confirmed via WebSocket within timeout`);
+        // WebSocket timed out - do a final check to see if transaction landed on-chain
+        // It could have succeeded, failed, or still be pending
+        const txData = await this._fetchTransactionWithRetry(signature, 2, 500);
+        if (txData) {
+          // Transaction is on-chain - check if it succeeded or failed
+          const failed = txData.meta?.err !== null;
+          if (failed) {
+            const { parseSolanaError } = await import('./solana-error-parser');
+            const errorStr = JSON.stringify(txData.meta?.err);
+            const parsed = parseSolanaError(errorStr);
+            logger.error(
+              `❌ Transaction ${signature} failed on-chain: ${parsed.type} - ${parsed.message} (code: ${parsed.errorCodeHex || 'unknown'})`,
+            );
+          } else {
+            logger.info(`✅ Transaction ${signature} confirmed on-chain (missed WebSocket notification)`);
+          }
+          return { confirmed: !failed, txData };
+        }
+        // Transaction not found on-chain yet - return as pending
         return { confirmed: false, txData: null };
       }
     } catch (wsError: any) {
@@ -1546,7 +1570,12 @@ export class Solana {
 
         if (status) {
           if (status.err) {
-            logger.error(`❌ Transaction ${signature} failed with error:`, status.err);
+            const { parseSolanaError } = await import('./solana-error-parser');
+            const errorStr = JSON.stringify(status.err);
+            const parsed = parseSolanaError(errorStr);
+            logger.error(
+              `❌ Transaction ${signature} failed: ${parsed.type} - ${parsed.message} (code: ${parsed.errorCodeHex || 'unknown'})`,
+            );
             return { confirmed: false, txData: null };
           }
 
@@ -1847,83 +1876,44 @@ export class Solana {
   /**
    * Helper function to simulate transaction with proper error handling
    * @param transaction Transaction to simulate
-   * @param fastify Fastify instance for error responses
    * @returns Promise that resolves if simulation succeeds, throws descriptive error otherwise
    */
-  public async simulateWithErrorHandling(
-    transaction: VersionedTransaction | Transaction,
-    fastify?: any,
-  ): Promise<void> {
+  public async simulateWithErrorHandling(transaction: VersionedTransaction | Transaction): Promise<void> {
     try {
       await this.simulateTransaction(transaction);
     } catch (simulationError: any) {
       const errorMessage = simulationError?.message || '';
 
-      // Helpers to safely create HTTP-style errors even if fastify is undefined
-      const httpErrors = fastify?.httpErrors;
-      const asBadRequest = (msg: string) => {
-        if (httpErrors?.badRequest) return httpErrors.badRequest(msg);
-        const e = new Error(msg) as Error & { statusCode?: number };
-        e.statusCode = 400;
-        return e;
-      };
+      // Import error helpers and parser
+      const { simulationFailed, insufficientBalance, slippageExceeded } = await import('../../services/error-handler');
+      const { parseSolanaError } = await import('./solana-error-parser');
 
-      // Known program-specific messages
-      if (
-        errorMessage.includes('Error Code: InvalidPositionWidth') ||
-        errorMessage.includes('custom program error: 0x1798')
-      ) {
-        throw asBadRequest(
-          'Error Code: InvalidPositionWidth. Error Number: 6040. Error Message: Invalid position width. ' +
-            'Please use a position width of 69 bins or lower.',
-        );
-      }
-      if (
-        errorMessage.includes('Error Code: PriceSlippageCheck') ||
-        errorMessage.includes('custom program error: 0x1785')
-      ) {
-        throw asBadRequest(
-          'Position/Swap failed: Price slippage check failed. The calculated price from ticks does not match expected values. ' +
-            "This can happen if: (1) price moved significantly since quote was calculated, (2) token amounts don't match the price range, " +
-            'or (3) tick spacing constraints are not met. Try: increasing slippage tolerance, adjusting token amounts to better match current price, ' +
-            'or using a wider price range.',
-        );
-      }
-      if (
-        errorMessage.includes('Error Code: TooLittleOutputReceived') ||
-        errorMessage.includes('custom program error: 0x1786')
-      ) {
-        throw asBadRequest(
-          'Swap failed: Slippage tolerance exceeded. Output would be less than your minimum. Consider increasing slippage.',
-        );
-      }
-      if (
-        errorMessage.includes('Error Code: TooMuchInputPaid') ||
-        errorMessage.includes('custom program error: 0x1787')
-      ) {
-        throw asBadRequest(
-          'Swap failed: Slippage tolerance exceeded. Input would be more than your maximum. Consider increasing slippage.',
-        );
-      }
-      if (errorMessage.includes('SqrtPriceLimitOverflow') || errorMessage.includes('custom program error: 0x177d')) {
-        throw asBadRequest(
-          'Swap failed: Square root price limit overflow. Adjust price limit/direction or retry with default limits.',
-        );
-      }
-      if (errorMessage.includes('InsufficientFunds') || errorMessage.toLowerCase().includes('insufficient')) {
-        throw asBadRequest('Transaction failed: Insufficient funds. Please check your token balance.');
-      }
-      if (errorMessage.includes('AccountNotFound')) {
-        throw asBadRequest(
-          'Transaction failed: One or more required accounts not found. The pool or token accounts may not be initialized.',
-        );
-      }
+      // Parse the error using the utility
+      const parsedError = parseSolanaError(errorMessage);
 
-      // Generic fallback
-      logger.error('Transaction simulation failed:', simulationError);
-      throw asBadRequest(
-        'Transaction simulation failed. This usually means the swap parameters are invalid or market conditions changed. Try again.',
-      );
+      // Throw appropriate error based on parsed type
+      switch (parsedError.type) {
+        case 'SLIPPAGE_EXCEEDED':
+          throw slippageExceeded(parsedError.message);
+
+        case 'INSUFFICIENT_BALANCE':
+          throw insufficientBalance(parsedError.message);
+
+        case 'INVALID_POSITION':
+        case 'PRICE_LIMIT_OVERFLOW':
+        case 'ACCOUNT_NOT_FOUND':
+        case 'MATH_OVERFLOW':
+          throw simulationFailed(parsedError.message);
+
+        default:
+          // Generic simulation failure
+          logger.error('Transaction simulation failed:', simulationError);
+          throw simulationFailed(
+            parsedError.errorCodeHex
+              ? `Transaction simulation failed. Error code: ${parsedError.errorCodeHex}.`
+              : 'Transaction simulation failed.',
+          );
+      }
     }
   }
 
