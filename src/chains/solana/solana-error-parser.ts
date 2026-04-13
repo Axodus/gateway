@@ -121,6 +121,10 @@ const GENERIC_ERROR_CODES: Record<number, { type: SolanaErrorType; message: stri
     type: 'SLIPPAGE_EXCEEDED',
     message: 'Slippage tolerance exceeded. The output amount would be less than your minimum.',
   },
+  6004: {
+    type: 'SLIPPAGE_EXCEEDED',
+    message: 'Exceeded slippage tolerance. The swap output is less than minimum amount.',
+  },
   6021: {
     type: 'SLIPPAGE_EXCEEDED',
     message: 'Price slippage check failed. The calculated price does not match expected values.',
@@ -241,6 +245,12 @@ function extractProgramId(errorMessage: string): string | null {
   }
   if (errorMessage.includes('CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK')) {
     return PROGRAM_IDS.RAYDIUM_CLMM;
+  }
+  if (errorMessage.includes('whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc')) {
+    return PROGRAM_IDS.ORCA_WHIRLPOOL;
+  }
+  if (errorMessage.includes('675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8')) {
+    return PROGRAM_IDS.RAYDIUM_AMM;
   }
 
   return null;
